@@ -1,0 +1,162 @@
+name: Pogon Release
+description: Connect a GitHub Actions workflow to Pogon releases — link the issues and pull requests of the shipped commits to a release.
+author: Krafter
+branding:
+  icon: package
+  color: purple
+
+inputs:
+  key:
+    description: Pipeline access key (`pgn_rel_…`). Pass it from a secret.
+    required: true
+  api-url:
+    description: Pogon server.
+    required: false
+    default: https://app.pogon.me
+  command:
+    description: "`sync` (default), `complete` or `update`."
+    required: false
+    default: sync
+  name:
+    description: Release name.
+    required: false
+  release-version:
+    description: Release version.
+    required: false
+  description:
+    description: Release description. Set it to a single space to clear the description.
+    required: false
+  stage:
+    description: Stage name, required for `update`.
+    required: false
+  include-paths:
+    description: Comma-separated path globs; only commits touching them count (`!` excludes). Overrides the pipeline's path filters.
+    required: false
+  include-subjects:
+    description: Only commits whose subject matches this regex count.
+    required: false
+  issue-pattern:
+    description: Regex whose group 1 captures an issue identifier in commit subjects.
+    required: false
+  base-ref:
+    description: Scan `<base-ref>..HEAD` instead of choosing the range automatically.
+    required: false
+  links:
+    description: One link per line, `https://…` or `Label=https://…`.
+    required: false
+  documents:
+    description: One document file per line, `path` or `Title=path`.
+    required: false
+  release-notes-file:
+    description: File with the release notes for this release.
+    required: false
+  no-branch-ref-detection:
+    description: "`true` disables issue detection from branch pointers."
+    required: false
+    default: "false"
+  dry-run:
+    description: "`true` scans and reads, but changes nothing."
+    required: false
+    default: "false"
+  timeout:
+    description: Seconds before the CLI gives up.
+    required: false
+  verbose:
+    description: "`true` prints detailed progress."
+    required: false
+    default: "false"
+
+outputs:
+  release-id:
+    description: Id of the targeted release (empty when nothing was synced).
+    value: ${{ steps.run.outputs.release-id }}
+  release-url:
+    description: Link to the release in Pogon.
+    value: ${{ steps.run.outputs.release-url }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: "26"
+
+    # The CLI is one JavaScript file. The version and its SHA-256 are pinned here by the
+    # publish script, so a changed file on the download host fails the step.
+    - id: run
+      shell: bash
+      env:
+        POGON_RELEASE_CLI_VERSION: "0.1.0"
+        POGON_RELEASE_CLI_SHA256: "0c38ce1005b27879784b1a0475d2bf18eba62197a6ed8c3294547316e98ae434"
+        POGON_RELEASE_KEY: ${{ inputs.key }}
+        POGON_API_URL: ${{ inputs.api-url }}
+        IN_COMMAND: ${{ inputs.command }}
+        IN_NAME: ${{ inputs.name }}
+        IN_RELEASE_VERSION: ${{ inputs.release-version }}
+        IN_DESCRIPTION: ${{ inputs.description }}
+        IN_STAGE: ${{ inputs.stage }}
+        IN_INCLUDE_PATHS: ${{ inputs.include-paths }}
+        IN_INCLUDE_SUBJECTS: ${{ inputs.include-subjects }}
+        IN_ISSUE_PATTERN: ${{ inputs.issue-pattern }}
+        IN_BASE_REF: ${{ inputs.base-ref }}
+        IN_LINKS: ${{ inputs.links }}
+        IN_DOCUMENTS: ${{ inputs.documents }}
+        IN_RELEASE_NOTES_FILE: ${{ inputs.release-notes-file }}
+        IN_NO_BRANCH_REF_DETECTION: ${{ inputs.no-branch-ref-detection }}
+        IN_DRY_RUN: ${{ inputs.dry-run }}
+        IN_TIMEOUT: ${{ inputs.timeout }}
+        IN_VERBOSE: ${{ inputs.verbose }}
+      run: |
+        set -eo pipefail
+        cli="$RUNNER_TEMP/pogon-release-$POGON_RELEASE_CLI_VERSION.mjs"
+        base="${POGON_RELEASE_CLI_BASE_URL:-https://downloads.pogon.me/release-cli}"
+        curl -fsSL --retry 3 -o "$cli" "$base/$POGON_RELEASE_CLI_VERSION/pogon-release.mjs"
+        node -e '
+          const { createHash } = require("node:crypto");
+          const actual = createHash("sha256").update(require("node:fs").readFileSync(process.argv[1])).digest("hex");
+          if (actual !== process.env.POGON_RELEASE_CLI_SHA256) {
+            console.error(`::error::pogon-release.mjs SHA-256 mismatch: expected ${process.env.POGON_RELEASE_CLI_SHA256}, got ${actual}`);
+            process.exit(1);
+          }' "$cli"
+
+        args=("${IN_COMMAND:-sync}" --json)
+        add() { if [[ -n "$2" ]]; then args+=("$1=$2"); fi; }
+        add --name "$IN_NAME"
+        add --release-version "$IN_RELEASE_VERSION"
+        if [[ "$IN_DESCRIPTION" == " " ]]; then args+=("--description="); else add --description "$IN_DESCRIPTION"; fi
+        add --stage "$IN_STAGE"
+        add --include-paths "$IN_INCLUDE_PATHS"
+        add --include-subjects "$IN_INCLUDE_SUBJECTS"
+        add --issue-pattern "$IN_ISSUE_PATTERN"
+        add --base-ref "$IN_BASE_REF"
+        add --release-notes-file "$IN_RELEASE_NOTES_FILE"
+        add --timeout "$IN_TIMEOUT"
+        while IFS= read -r line; do
+          if [[ -n "${line// }" ]]; then args+=(--link "$line"); fi
+        done <<< "$IN_LINKS"
+        while IFS= read -r line; do
+          if [[ -n "${line// }" ]]; then args+=(--document-file "$line"); fi
+        done <<< "$IN_DOCUMENTS"
+        if [[ "$IN_NO_BRANCH_REF_DETECTION" == "true" ]]; then args+=(--no-branch-ref-detection); fi
+        if [[ "$IN_DRY_RUN" == "true" ]]; then args+=(--dry-run); fi
+        if [[ "$IN_VERBOSE" == "true" ]]; then args+=(--verbose); fi
+
+        # --json puts the result on stdout and the log as JSON lines on stderr; the log is
+        # turned back into readable lines with workflow annotations for errors and warnings.
+        status=0
+        node "$cli" "${args[@]}" > "$RUNNER_TEMP/pogon-release.json" 2> "$RUNNER_TEMP/pogon-release.log" || status=$?
+        node -e '
+          for (const line of require("node:fs").readFileSync(process.argv[1], "utf8").split("\n")) {
+            if (!line) continue;
+            let entry;
+            try { entry = JSON.parse(line); } catch { console.log(line); continue; }
+            const msg = entry.msg ?? entry.message ?? line;
+            const level = entry.level ?? (entry.error ? "error" : "info");
+            console.log(level === "error" ? `::error::${msg}` : level === "warn" ? `::warning::${msg}` : msg);
+          }' "$RUNNER_TEMP/pogon-release.log"
+        if [[ $status -ne 0 ]]; then exit $status; fi
+        node -e '
+          const out = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+          const lines = [`release-id=${out.release?.id ?? ""}`, `release-url=${out.release?.url ?? ""}`];
+          require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, lines.join("\n") + "\n");
+        ' "$RUNNER_TEMP/pogon-release.json"
