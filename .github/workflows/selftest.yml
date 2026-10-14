@@ -1,0 +1,37 @@
+# Self-test of the action on real runners: with a key the server does not know, the
+# action must download the CLI, verify its pinned SHA-256, run it, and fail on the
+# server's 401 — not earlier (download, hash, Node, arguments).
+name: selftest
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  invalid-key:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: release
+        uses: ./
+        continue-on-error: true
+        with:
+          key: pgn_rel_selftest_not_a_key
+          verbose: "true"
+      - name: failed on the server's 401, after the CLI ran
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ steps.release.outcome }}" = failure
+          cat "$RUNNER_TEMP/pogon-release.log"
+          grep -q "pogon-release v" "$RUNNER_TEMP/pogon-release.log"
+          grep -q "HTTP 401" "$RUNNER_TEMP/pogon-release.log"
