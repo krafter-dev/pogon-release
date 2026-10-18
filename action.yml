@@ -86,8 +86,8 @@ runs:
     - id: run
       shell: bash
       env:
-        POGON_RELEASE_CLI_VERSION: "0.1.0"
-        POGON_RELEASE_CLI_SHA256: "0c38ce1005b27879784b1a0475d2bf18eba62197a6ed8c3294547316e98ae434"
+        POGON_RELEASE_CLI_VERSION: "0.1.2"
+        POGON_RELEASE_CLI_SHA256: "8cfe6df561b4ec2cdb4672db00290834a71319aab7681229ccbdf76af75739b1"
         POGON_RELEASE_KEY: ${{ inputs.key }}
         POGON_API_URL: ${{ inputs.api-url }}
         IN_COMMAND: ${{ inputs.command }}
